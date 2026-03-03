@@ -1,0 +1,72 @@
+fabric-deployment:
+  stage: deploy
+  # 2025년 1월자 Azure CLI 이미지 사용
+  image: <>
+  tags: [docker]
+
+  variables:
+    SOURCE_DIR: "DeployFile"
+    # 워크스페이스 루트에 배포하기 위해 빈 값으로 설정하거나 제거합니다.
+    TARGET_ROOT: ""
+    DEPLOY_SCRIPT: "Script/deploy.py"
+
+  script:
+    - echo "1. Python Dependency Install"
+    - pip3 install requests --break-system-packages || true
+
+    - echo "2. Check Deploy Files"
+    - |
+      COUNT=$(find "$SOURCE_DIR" -name "*.ipynb" | wc -l)
+      echo "Notebook Count = $COUNT"
+      if [ "$COUNT" -eq 0 ]; then
+        echo "❌ No notebooks found in $SOURCE_DIR"
+        exit 1
+      fi
+
+    - echo "3. Azure Login"
+    - |
+      az login --service-principal \
+        --username "$AZURE_SERVICE_PRINCIPAL_ID2" \
+        --password "$AZURE_SERVICE_PRINCIPAL_PWD2" \
+        --tenant "$AZURE_TENANT_ID" \
+        --allow-no-subscriptions
+
+    - echo "4. Get Fabric Token"
+    - |
+      export FABRIC_TOKEN=$(az account get-access-token \
+        --resource https://api.fabric.microsoft.com \
+        --query accessToken -o tsv)
+
+      echo "FABRIC_TOKEN length: $(echo $FABRIC_TOKEN | wc -c)"
+      echo "TARGET_WORKSPACE_ID=$FABRIC_WORKSPACE_ID"
+
+    - echo "5. Deploy to Fabric (Workspace Root)"
+    - |
+      export IFS=$'\n'
+      # SOURCE_DIR 내부의 모든 .ipynb 파일을 찾아서 루프를 돕니다.
+      for file_path in $(find "$SOURCE_DIR" -name "*.ipynb"); do
+        
+        # SOURCE_DIR 이후의 상대 경로만 추출합니다.
+        # 예: DeployFile/SubFolder/test.ipynb -> SubFolder
+        REL_DIR=$(dirname "$file_path" | sed "s|^$SOURCE_DIR||" | sed 's|^/||')
+
+        # FINAL_FOLDER 결정 로직
+        # TARGET_ROOT를 비웠으므로, 원본의 하위 폴더 구조만 유지합니다.
+        # 파일이 SOURCE_DIR 바로 아래 있다면 FINAL_FOLDER는 빈 값이 됩니다.
+        if [ -z "$REL_DIR" ]; then
+          FINAL_FOLDER=""
+        else
+          FINAL_FOLDER="$REL_DIR"
+        fi
+
+        echo "🚀 Deploying: $file_path"
+        echo "📍 Destination: Workspace Root/${FINAL_FOLDER:- (Root)}"
+
+        python3 "$DEPLOY_SCRIPT" \
+          --token "$FABRIC_TOKEN" \
+          --workspace "$FABRIC_WORKSPACE_ID" \
+          --file "$file_path" \
+          --folder "$FINAL_FOLDER"
+      done
+
+  allow_failure: false
